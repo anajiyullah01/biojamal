@@ -1,145 +1,117 @@
-import { Telegraf } from "telegraf";
-import waPkg from "whatsapp-web.js";
-const { Client, LocalAuth } = waPkg;
-import QRCode from "qrcode";
+import TelegramBot from "node-telegram-bot-api";
+import pkg from "whatsapp-web.js";
 import fs from "fs";
-import pg from "pg";
-const { Pool } = pg;
+import qrcode from "qrcode-terminal";
 
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+const { Client, LocalAuth } = pkg;
 
-const pool = new Pool({
-  host: process.env.PGHOST,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
-  database: process.env.PGDATABASE,
-  port: process.env.PGPORT
-});
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+const ADMIN_ID = process.env.ADMIN_ID;
 
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS bio_history (
-    id SERIAL PRIMARY KEY,
-    number TEXT NOT NULL,
-    bio TEXT NOT NULL,
-    last_seen TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-  );
-`);
+let client;
+let ready = false;
 
-const waClient = new Client({
-  authStrategy: new LocalAuth({ clientId: "telegram-wa-bio" }),
-  puppeteer: { headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }
-});
+// Inisialisasi WhatsApp Client
+const startWhatsApp = () => {
+  client = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-software-rasterizer",
+        "--no-zygote",
+        "--single-process",
+      ],
+      headless: true,
+    },
+  });
 
-waClient.on("qr", async (qr) => {
-  const pngBuffer = await QRCode.toBuffer(qr);
-  await bot.telegram.sendPhoto(process.env.ADMIN_ID, { source: pngBuffer }, { caption: "🔑 Scan QR ini untuk login WhatsApp bot!" });
-});
+  client.on("qr", (qr) => {
+    console.log("QR RECEIVED, SCAN INI DI WHATSAPP WEB:");
+    qrcode.generate(qr, { small: true });
+    if (ADMIN_ID) bot.sendMessage(ADMIN_ID, "📱 Silakan scan QR code di terminal Railway (lihat Logs).");
+  });
 
-waClient.on("ready", () => console.log("✅ WhatsApp client siap"));
-waClient.initialize();
+  client.on("ready", () => {
+    ready = true;
+    console.log("✅ WhatsApp client siap!");
+    if (ADMIN_ID) bot.sendMessage(ADMIN_ID, "✅ WhatsApp client sudah siap digunakan!");
+  });
 
-function toWhatsAppId(num) {
-  const digits = num.replace(/\D/g, "");
-  return `${digits}@c.us`;
-}
+  client.initialize();
+};
 
-function formatTimestamp(date = new Date()) {
-  return date
-    .toLocaleString("id-ID", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit"
-    })
-    .replace(/\./g, ":");
-}
+startWhatsApp();
 
-bot.command("cekbio", async (ctx) => {
-  const lines = ctx.message.text.split("\n").slice(1);
-  const numbers = lines.map((n) => n.trim()).filter((n) => n.length > 5);
+// Command /cekbio
+bot.onText(/\/cekbio/, async (msg) => {
+  const chatId = msg.chat.id;
 
-  if (!numbers.length)
-    return ctx.reply("Kirim daftar nomor di bawah /cekbio\nContoh:\n/cekbio\n6281234567890\n6289876543210");
+  if (chatId.toString() !== ADMIN_ID) {
+    return bot.sendMessage(chatId, "🚫 Kamu tidak punya akses untuk perintah ini.");
+  }
 
-  await ctx.reply(`🔍 Mengecek ${numbers.length} nomor... Mohon tunggu...`);
+  if (!ready) {
+    return bot.sendMessage(chatId, "⏳ WhatsApp client belum siap, tunggu sebentar...");
+  }
 
-  const withBio = [];
-  const noBio = [];
-  const notRegistered = [];
+  bot.sendMessage(chatId, "📤 Kirim daftar nomor WhatsApp (satu per baris):");
+  bot.once("message", async (listMsg) => {
+    const numbers = listMsg.text
+      .split("\n")
+      .map((n) => n.replace(/\D/g, ""))
+      .filter((n) => n.length > 7);
 
-  for (const num of numbers) {
-    const waId = toWhatsAppId(num);
-    try {
-      const contact = await waClient.getContactById(waId);
-      if (!contact) {
-        notRegistered.push(num);
-        continue;
-      }
+    let hasil = "";
+    let tanpaBio = [];
+    let tidakTerdaftar = [];
 
-      let about = null;
-      if (typeof contact.getAbout === "function") {
-        try { about = await contact.getAbout(); } catch {}
-      }
+    bot.sendMessage(chatId, `🔍 Mengecek ${numbers.length} nomor, mohon tunggu...`);
 
-      const now = new Date();
-      if (about && about.trim() !== "") {
-        const res = await pool.query(
-          "SELECT * FROM bio_history WHERE number=$1 ORDER BY id DESC LIMIT 1",
-          [num]
-        );
-        const last = res.rows[0];
+    for (const num of numbers) {
+      try {
+        const wid = `${num}@c.us`;
+        const isRegistered = await client.isRegisteredUser(wid);
 
-        if (!last) {
-          await pool.query(
-            "INSERT INTO bio_history (number, bio, last_seen, updated_at) VALUES ($1,$2,$3,$3)",
-            [num, about, now]
-          );
-        } else if (last.bio !== about) {
-          await pool.query(
-            "INSERT INTO bio_history (number, bio, last_seen, updated_at) VALUES ($1,$2,$3,$3)",
-            [num, about, now]
-          );
-        } else {
-          await pool.query("UPDATE bio_history SET last_seen=$1 WHERE id=$2", [now, last.id]);
+        if (!isRegistered) {
+          tidakTerdaftar.push(num);
+          continue;
         }
 
-        const first = await pool.query(
-          "SELECT MIN(updated_at) AS first_seen FROM bio_history WHERE number=$1",
-          [num]
-        );
-        const firstSeen = first.rows[0]?.first_seen
-          ? formatTimestamp(new Date(first.rows[0].first_seen))
-          : formatTimestamp(now);
+        // Ambil bio lewat dua cara
+        const contact = await client.getContactById(wid);
+        const about = contact.status || (await client.getAbout(wid)) || "";
 
-        withBio.push({ num, about, firstSeen });
-      } else {
-        noBio.push(num);
+        if (about) {
+          // Ambil waktu dari metadata jika ada
+          let date = "";
+          if (contact?.statusTimestamp) {
+            const d = new Date(contact.statusTimestamp);
+            date = `${d.toLocaleDateString("id-ID")} ${d.toLocaleTimeString("id-ID")}`;
+          }
+
+          hasil += `└─ 📅 ${num}\n   └─ 📝 "${about}"\n      └─ ⏰ ${date || "Tidak diketahui"}\n\n`;
+        } else {
+          tanpaBio.push(num);
+        }
+
+        // jeda kecil biar gak rate limit
+        await new Promise((r) => setTimeout(r, 1000));
+      } catch (err) {
+        console.log(`Gagal cek ${num}:`, err.message);
+        tanpaBio.push(num);
       }
-    } catch (err) {
-      notRegistered.push(num);
     }
-  }
 
-  let result = "";
-  for (const entry of withBio) {
-    result += `└─ 📅 ${entry.num}\n`;
-    result += `   └─ 📝 "${entry.about}"\n`;
-    result += `      └─ 🕓 Pertama kali terlihat: ${entry.firstSeen}\n\n`;
-  }
+    hasil += `----------------------------------------\n\n`;
+    hasil += `📵 NOMOR TANPA BIO / PRIVASI (${tanpaBio.length})\n${tanpaBio.join("\n")}\n\n`;
+    hasil += `🚫 NOMOR TIDAK TERDAFTAR (${tidakTerdaftar.length})\n${tidakTerdaftar.join("\n")}\n`;
 
-  result += "----------------------------------------\n\n";
-  result += `📵 NOMOR TANPA BIO / PRIVASI (${noBio.length})\n${noBio.join("\n") || "(Tidak ada)"}\n\n`;
-  result += `🚫 NOMOR TIDAK TERDAFTAR (${notRegistered.length})\n${notRegistered.join("\n") || "(Tidak ada)"}`;
-
-  const filename = `/tmp/hasil_cekbio_${Date.now()}.txt`;
-  fs.writeFileSync(filename, result);
-
-  await ctx.replyWithDocument({ source: filename, filename: "hasil_cekbio.txt" });
-  fs.unlinkSync(filename);
+    const filename = "hasil_cekbio.txt";
+    fs.writeFileSync(filename, hasil, "utf-8");
+    await bot.sendDocument(chatId, filename);
+  });
 });
-
-bot.launch();
-console.log("🚀 Telegram bot aktif (output berupa file .txt)");
