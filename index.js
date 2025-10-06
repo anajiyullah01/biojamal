@@ -13,11 +13,11 @@ const ADMIN_ID = process.env.ADMIN_ID;
 let client;
 let ready = false;
 
-// Simpan path absolute agar Railway bisa buat file sementara
+// Path absolute
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Fungsi untuk mulai client WhatsApp
+// Jalankan WhatsApp
 const startWhatsApp = () => {
   client = new Client({
     authStrategy: new LocalAuth(),
@@ -35,27 +35,19 @@ const startWhatsApp = () => {
     },
   });
 
-  // Saat QR diterima
+  // Kirim QR ke Telegram
   client.on("qr", async (qr) => {
-    console.log("QR RECEIVED, mengirim ke Telegram...");
-
+    console.log("QR RECEIVED, kirim ke Telegram...");
     try {
-      // Simpan QR code sementara di folder project
       const qrPath = path.join(__dirname, "whatsapp_qr.png");
-
-      // Buat file gambar QR
       await qrcode.toFile(qrPath, qr, { width: 300 });
-
-      // Kirim gambar QR ke admin Telegram
       await bot.sendPhoto(ADMIN_ID, qrPath, {
-        caption: "📲 Scan QR ini di WhatsApp kamu untuk login WhatsApp Web.",
+        caption: "📲 Scan QR ini di WhatsApp kamu untuk login.",
       });
-
-      // Hapus file setelah dikirim (opsional)
       fs.unlinkSync(qrPath);
     } catch (err) {
       console.error("Gagal kirim QR:", err.message);
-      await bot.sendMessage(ADMIN_ID, "⚠️ Gagal membuat QR image, scan lewat Railway Logs saja.");
+      await bot.sendMessage(ADMIN_ID, "⚠️ QR gagal dibuat, scan lewat Railway Logs saja.");
     }
   });
 
@@ -70,20 +62,15 @@ const startWhatsApp = () => {
 
 startWhatsApp();
 
-// --- Command /cekbio (sama seperti versi sebelumnya) ---
-
+// --- Command /cekbio ---
 bot.onText(/\/cekbio/, async (msg) => {
   const chatId = msg.chat.id;
+  if (chatId.toString() !== ADMIN_ID) return bot.sendMessage(chatId, "🚫 Tidak ada izin.");
 
-  if (chatId.toString() !== ADMIN_ID) {
-    return bot.sendMessage(chatId, "🚫 Kamu tidak punya akses untuk perintah ini.");
-  }
-
-  if (!ready) {
-    return bot.sendMessage(chatId, "⏳ WhatsApp client belum siap, tunggu sebentar...");
-  }
+  if (!ready) return bot.sendMessage(chatId, "⏳ WhatsApp client belum siap...");
 
   bot.sendMessage(chatId, "📤 Kirim daftar nomor WhatsApp (satu per baris):");
+
   bot.once("message", async (listMsg) => {
     const numbers = listMsg.text
       .split("\n")
@@ -94,22 +81,29 @@ bot.onText(/\/cekbio/, async (msg) => {
     let tanpaBio = [];
     let tidakTerdaftar = [];
 
-    bot.sendMessage(chatId, `🔍 Mengecek ${numbers.length} nomor, mohon tunggu...`);
+    bot.sendMessage(chatId, `🔍 Mengecek ${numbers.length} nomor...`);
 
     for (const num of numbers) {
       try {
         const wid = `${num}@c.us`;
         const isRegistered = await client.isRegisteredUser(wid);
-
         if (!isRegistered) {
           tidakTerdaftar.push(num);
           continue;
         }
 
+        // Paksa ambil data terbaru dari server
         const contact = await client.getContactById(wid);
-        const about = contact.status || (await client.getAbout(wid)) || "";
+        const aboutInfo = await client.pupPage.evaluate(async (id) => {
+          const wid = window.Store.WidFactory.createWid(id);
+          const result = await window.Store.QueryExist(wid);
+          if (result && result.status) return result.status;
+          const about = await window.Store.StatusUtils.getStatus(wid);
+          return about?.status || null;
+        }, wid);
 
-        if (about) {
+        const about = aboutInfo || contact.status || "—";
+        if (about && about.trim() !== "—" && about.trim() !== "") {
           let date = "";
           if (contact?.statusTimestamp) {
             const d = new Date(contact.statusTimestamp);
@@ -121,7 +115,7 @@ bot.onText(/\/cekbio/, async (msg) => {
           tanpaBio.push(num);
         }
 
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 1200));
       } catch (err) {
         console.log(`Gagal cek ${num}:`, err.message);
         tanpaBio.push(num);
@@ -134,6 +128,6 @@ bot.onText(/\/cekbio/, async (msg) => {
 
     const filename = "hasil_cekbio.txt";
     fs.writeFileSync(filename, hasil, "utf-8");
-    await bot.sendDocument(chatId, filename);
+    await bot.sendDocument(chatId, filename, {}, { contentType: "text/plain" });
   });
 });
