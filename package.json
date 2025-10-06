@@ -7,9 +7,8 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "telegraf": "^4.15.0",
-    "whatsapp-web.js": "^1.24.0",
-    "qrcode": "^1.5.4",
-    "pg": "^8.11.3"
+    "whatsapp-web.js": "^1.25.0",
+    "qrcode-terminal": "^0.12.0",
+    "node-telegram-bot-api": "^0.61.0"
   }
 }
