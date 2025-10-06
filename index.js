@@ -1,6 +1,6 @@
 import { Telegraf } from "telegraf";
 import pkg from "whatsapp-web.js";
-const { Client, LocalAuth } = pkg;
+const { Client, LocalAuth } = waPkg;
 import QRCode from "qrcode";
 import fs from "fs";
 import pkg from "pg";
