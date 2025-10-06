@@ -1,10 +1,10 @@
 import { Telegraf } from "telegraf";
-import pkg from "whatsapp-web.js";
+import waPkg from "whatsapp-web.js";
 const { Client, LocalAuth } = waPkg;
 import QRCode from "qrcode";
 import fs from "fs";
-import pkg from "pg";
-const { Pool } = pkg;
+import pg from "pg";
+const { Pool } = pg;
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
