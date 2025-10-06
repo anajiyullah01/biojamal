@@ -1,7 +1,9 @@
 import TelegramBot from "node-telegram-bot-api";
 import pkg from "whatsapp-web.js";
 import fs from "fs";
-import qrcode from "qrcode-terminal";
+import qrcode from "qrcode";
+import { fileURLToPath } from "url";
+import path from "path";
 
 const { Client, LocalAuth } = pkg;
 
@@ -11,7 +13,11 @@ const ADMIN_ID = process.env.ADMIN_ID;
 let client;
 let ready = false;
 
-// Inisialisasi WhatsApp Client
+// Simpan path absolute agar Railway bisa buat file sementara
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Fungsi untuk mulai client WhatsApp
 const startWhatsApp = () => {
   client = new Client({
     authStrategy: new LocalAuth(),
@@ -29,16 +35,34 @@ const startWhatsApp = () => {
     },
   });
 
-  client.on("qr", (qr) => {
-    console.log("QR RECEIVED, SCAN INI DI WHATSAPP WEB:");
-    qrcode.generate(qr, { small: true });
-    if (ADMIN_ID) bot.sendMessage(ADMIN_ID, "📱 Silakan scan QR code di terminal Railway (lihat Logs).");
+  // Saat QR diterima
+  client.on("qr", async (qr) => {
+    console.log("QR RECEIVED, mengirim ke Telegram...");
+
+    try {
+      // Simpan QR code sementara di folder project
+      const qrPath = path.join(__dirname, "whatsapp_qr.png");
+
+      // Buat file gambar QR
+      await qrcode.toFile(qrPath, qr, { width: 300 });
+
+      // Kirim gambar QR ke admin Telegram
+      await bot.sendPhoto(ADMIN_ID, qrPath, {
+        caption: "📲 Scan QR ini di WhatsApp kamu untuk login WhatsApp Web.",
+      });
+
+      // Hapus file setelah dikirim (opsional)
+      fs.unlinkSync(qrPath);
+    } catch (err) {
+      console.error("Gagal kirim QR:", err.message);
+      await bot.sendMessage(ADMIN_ID, "⚠️ Gagal membuat QR image, scan lewat Railway Logs saja.");
+    }
   });
 
   client.on("ready", () => {
     ready = true;
     console.log("✅ WhatsApp client siap!");
-    if (ADMIN_ID) bot.sendMessage(ADMIN_ID, "✅ WhatsApp client sudah siap digunakan!");
+    bot.sendMessage(ADMIN_ID, "✅ WhatsApp client sudah siap digunakan!");
   });
 
   client.initialize();
@@ -46,7 +70,8 @@ const startWhatsApp = () => {
 
 startWhatsApp();
 
-// Command /cekbio
+// --- Command /cekbio (sama seperti versi sebelumnya) ---
+
 bot.onText(/\/cekbio/, async (msg) => {
   const chatId = msg.chat.id;
 
@@ -81,12 +106,10 @@ bot.onText(/\/cekbio/, async (msg) => {
           continue;
         }
 
-        // Ambil bio lewat dua cara
         const contact = await client.getContactById(wid);
         const about = contact.status || (await client.getAbout(wid)) || "";
 
         if (about) {
-          // Ambil waktu dari metadata jika ada
           let date = "";
           if (contact?.statusTimestamp) {
             const d = new Date(contact.statusTimestamp);
@@ -98,7 +121,6 @@ bot.onText(/\/cekbio/, async (msg) => {
           tanpaBio.push(num);
         }
 
-        // jeda kecil biar gak rate limit
         await new Promise((r) => setTimeout(r, 1000));
       } catch (err) {
         console.log(`Gagal cek ${num}:`, err.message);
