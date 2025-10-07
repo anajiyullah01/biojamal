@@ -1,17 +1,15 @@
 {
-  "name": "biojamal",
+  "name": "telegram-whatsapp-bio-bot",
   "version": "1.0.0",
-  "description": "Telegram bot untuk cek bio WhatsApp (Railway ready)",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "whatsapp-web.js": "^1.23.0",
+    "whatsapp-web.js": "^1.25.0",
+    "qrcode-terminal": "^0.12.0",
     "node-telegram-bot-api": "^0.61.0",
-    "pg": "^8.11.3",
-    "qrcode": "^1.5.3",
-    "fs": "^0.0.1-security"
+    "qrcode": "^1.5.3"
   }
 }
