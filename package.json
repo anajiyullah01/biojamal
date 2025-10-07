@@ -4,14 +4,16 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "postinstall": "puppeteer install",
     "start": "node index.js"
   },
   "dependencies": {
-    "chromium": "^3.0.2",
-    "whatsapp-web.js": "^1.25.0",
+    "whatsapp-web.js": "^1.23.0",
     "puppeteer": "^22.4.0",
-    "qrcode-terminal": "^0.12.0",
-    "node-telegram-bot-api": "^0.61.0",
-    "qrcode": "^1.5.3"
+    "qrcode": "^1.5.3",
+    "node-telegram-bot-api": "^0.61.0"
+  },
+  "engines": {
+    "node": ">=20.x"
   }
 }
