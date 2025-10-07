@@ -1,12 +1,12 @@
 import pkg from "whatsapp-web.js";
-const { Client } = pkg;
+const { Client, AuthStrategy } = pkg;
 import qrcode from "qrcode";
 import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
 import pkgPG from "pg";
 const { Client: PGClient } = pkgPG;
 
-// === Telegram Setup ===
+// === Telegram Bot Setup ===
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const ADMIN_ID = process.env.ADMIN_ID;
 
@@ -17,7 +17,6 @@ const db = new PGClient({
 });
 await db.connect();
 
-// === Simpan session WhatsApp di PostgreSQL ===
 await db.query(`
   CREATE TABLE IF NOT EXISTS whatsapp_session (
     id SERIAL PRIMARY KEY,
@@ -25,17 +24,29 @@ await db.query(`
   );
 `);
 
-class DBAuth {
-  async save(session) {
-    await db.query("DELETE FROM whatsapp_session");
-    await db.query("INSERT INTO whatsapp_session (data) VALUES ($1)", [JSON.stringify(session)]);
-  }
-  async load() {
+// === Custom Auth Strategy (fix) ===
+class DBAuth extends AuthStrategy {
+  async beforeStart(client) {
+    this.client = client;
     const res = await db.query("SELECT data FROM whatsapp_session LIMIT 1");
-    if (res.rows.length > 0) return JSON.parse(res.rows[0].data);
-    return null;
+    if (res.rows.length > 0) {
+      client.options.session = JSON.parse(res.rows[0].data);
+      console.log("✅ Session loaded dari PostgreSQL");
+    } else {
+      console.log("ℹ️ Tidak ada session tersimpan, login baru diperlukan.");
+    }
   }
-  async clear() {
+
+  async afterAuth(session) {
+    console.log("💾 Menyimpan session baru ke database...");
+    await db.query("DELETE FROM whatsapp_session");
+    await db.query("INSERT INTO whatsapp_session (data) VALUES ($1)", [
+      JSON.stringify(session),
+    ]);
+  }
+
+  async logout() {
+    console.log("🧹 Menghapus session dari database...");
     await db.query("DELETE FROM whatsapp_session");
   }
 }
@@ -56,20 +67,19 @@ const client = new Client({
   },
 });
 
-// === Event: QR Code muncul ===
+// === QR Event ===
 client.on("qr", async (qr) => {
   const qrImage = await qrcode.toBuffer(qr);
   await bot.sendPhoto(ADMIN_ID, qrImage, { caption: "📲 Scan QR untuk login WhatsApp" });
-  console.log("✅ QR dikirim ke Telegram");
 });
 
-// === Event: Siap Terhubung ===
+// === Ready Event ===
 client.on("ready", async () => {
   console.log("✅ WhatsApp Web sudah terhubung!");
   await bot.sendMessage(ADMIN_ID, "✅ WhatsApp Web sudah terhubung!");
 });
 
-// === Event: Disconnect ===
+// === Disconnect Event ===
 client.on("disconnected", async (reason) => {
   console.log("⚠️ WhatsApp disconnected:", reason);
   await bot.sendMessage(ADMIN_ID, "⚠️ WhatsApp disconnected. Reconnecting...");
