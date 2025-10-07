@@ -1,5 +1,6 @@
 import TelegramBot from "node-telegram-bot-api";
-import { Client, LocalAuth } from "whatsapp-web.js";
+import pkg from "whatsapp-web.js";
+const { Client, LocalAuth } = pkg;
 import puppeteer from "puppeteer";
 import QRCode from "qrcode";
 import fs from "fs";
