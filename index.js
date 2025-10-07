@@ -1,133 +1,142 @@
-import TelegramBot from "node-telegram-bot-api";
 import pkg from "whatsapp-web.js";
-const { Client, LocalAuth } = pkg;
-import puppeteer from "puppeteer";
-import QRCode from "qrcode";
+const { Client } = pkg;
+import qrcode from "qrcode";
+import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
-import path from "path";
+import pkgPG from "pg";
+const { Client: PGClient } = pkgPG;
 
-const __dirname = path.resolve();
+// === Telegram Setup ===
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+const ADMIN_ID = process.env.ADMIN_ID;
 
-// === Konfigurasi Bot ===
-const TELEGRAM_BOT_TOKEN = process.env.BOT_TOKEN; // set di Railway variable: BOT_TOKEN
-const ADMIN_ID = 379525054; // ganti dengan id Telegram kamu
+// === PostgreSQL Setup ===
+const db = new PGClient({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+await db.connect();
 
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+// === Simpan session WhatsApp di PostgreSQL ===
+await db.query(`
+  CREATE TABLE IF NOT EXISTS whatsapp_session (
+    id SERIAL PRIMARY KEY,
+    data TEXT
+  );
+`);
 
-let client;
-let isWhatsAppReady = false;
-
-// === Inisialisasi WhatsApp Client ===
-const startWhatsApp = async () => {
-  const executablePath = await puppeteer.executablePath();
-
-  client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-      headless: true,
-      executablePath,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--no-first-run",
-        "--no-zygote",
-        "--disable-gpu",
-        "--single-process",
-      ],
-    },
-  });
-
-  client.on("qr", async (qr) => {
-    console.log("QR Code diterima, mengirim ke Telegram...");
-    const qrImagePath = path.join(__dirname, "qr.png");
-    await QRCode.toFile(qrImagePath, qr);
-    await bot.sendPhoto(ADMIN_ID, qrImagePath, { caption: "📱 Scan QR untuk login WhatsApp" });
-  });
-
-  client.on("ready", async () => {
-    console.log("✅ WhatsApp Client siap digunakan!");
-    isWhatsAppReady = true;
-    await bot.sendMessage(ADMIN_ID, "✅ WhatsApp Web sudah terhubung!");
-  });
-
-  client.on("disconnected", async () => {
-    console.log("❌ WhatsApp disconnected, mencoba ulang...");
-    isWhatsAppReady = false;
-    await bot.sendMessage(ADMIN_ID, "⚠️ WhatsApp disconnected. Reconnecting...");
-    setTimeout(startWhatsApp, 5000);
-  });
-
-  await client.initialize();
-};
-
-startWhatsApp();
-
-// === Fitur: /cekbio ===
-bot.onText(/\/cekbio (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const numberList = match[1]
-    .split("\n")
-    .map((n) => n.trim())
-    .filter((n) => n);
-
-  if (!isWhatsAppReady) {
-    return bot.sendMessage(chatId, "❌ WhatsApp belum siap. Tunggu beberapa detik lagi...");
+class DBAuth {
+  async save(session) {
+    await db.query("DELETE FROM whatsapp_session");
+    await db.query("INSERT INTO whatsapp_session (data) VALUES ($1)", [JSON.stringify(session)]);
   }
+  async load() {
+    const res = await db.query("SELECT data FROM whatsapp_session LIMIT 1");
+    if (res.rows.length > 0) return JSON.parse(res.rows[0].data);
+    return null;
+  }
+  async clear() {
+    await db.query("DELETE FROM whatsapp_session");
+  }
+}
 
-  const bioResults = [];
+// === WhatsApp Client ===
+const client = new Client({
+  authStrategy: new DBAuth(),
+  puppeteer: {
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+      "--single-process",
+    ],
+  },
+});
+
+// === Event: QR Code muncul ===
+client.on("qr", async (qr) => {
+  const qrImage = await qrcode.toBuffer(qr);
+  await bot.sendPhoto(ADMIN_ID, qrImage, { caption: "📲 Scan QR untuk login WhatsApp" });
+  console.log("✅ QR dikirim ke Telegram");
+});
+
+// === Event: Siap Terhubung ===
+client.on("ready", async () => {
+  console.log("✅ WhatsApp Web sudah terhubung!");
+  await bot.sendMessage(ADMIN_ID, "✅ WhatsApp Web sudah terhubung!");
+});
+
+// === Event: Disconnect ===
+client.on("disconnected", async (reason) => {
+  console.log("⚠️ WhatsApp disconnected:", reason);
+  await bot.sendMessage(ADMIN_ID, "⚠️ WhatsApp disconnected. Reconnecting...");
+});
+
+// === Jalankan WhatsApp Client ===
+client.initialize();
+
+// === Command /cekbio ===
+let cekBioState = {};
+
+bot.onText(/^\/cekbio/, async (msg) => {
+  if (msg.chat.id.toString() !== ADMIN_ID) return;
+  cekBioState[msg.chat.id] = true;
+  bot.sendMessage(msg.chat.id, "📱 Kirim daftar nomor WhatsApp yang ingin dicek, satu per baris.");
+});
+
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  if (!cekBioState[chatId]) return;
+  if (msg.text.startsWith("/")) return;
+
+  cekBioState[chatId] = false;
+
+  const numbers = msg.text
+    .split(/\r?\n/)
+    .map((n) => n.replace(/\D/g, ""))
+    .filter((n) => n.length > 5);
+
+  if (!numbers.length) return bot.sendMessage(chatId, "❌ Tidak ada nomor valid ditemukan.");
+
+  bot.sendMessage(chatId, `🔍 Mengecek ${numbers.length} nomor... Mohon tunggu.`);
+
+  const withBio = [];
   const noBio = [];
   const notRegistered = [];
 
-  await bot.sendMessage(chatId, `🔍 Memulai cek bio untuk ${numberList.length} nomor...`);
-
-  for (const num of numberList) {
-    const number = num.replace(/\D/g, "");
-    const jid = `${number}@c.us`;
-
+  for (const num of numbers) {
     try {
-      const contact = await client.getNumberId(number);
-      if (!contact) {
-        notRegistered.push(number);
-        continue;
-      }
+      const wid = `${num}@c.us`;
+      const user = await client.getContactById(wid);
+      const about = await user.getAbout();
 
-      const about = await client.getAbout(jid).catch(() => null);
-
-      if (about) {
-        bioResults.push({
-          number,
-          bio: about,
-          date: new Date().toLocaleString("id-ID"),
-        });
+      if (about && about.length > 0) {
+        const bioTime = new Date(user.statusTimestamp || Date.now()).toLocaleString("id-ID");
+        withBio.push(`└─ 📅 ${num}\n   └─ 📝 "${about}"\n      └─ ⏰ ${bioTime}`);
       } else {
-        noBio.push(number);
+        noBio.push(num);
       }
-    } catch (e) {
-      console.log(`❌ Gagal cek ${number}:`, e.message);
-      notRegistered.push(number);
+    } catch (err) {
+      if (err.message.includes("not a WhatsApp user")) {
+        notRegistered.push(num);
+      } else {
+        noBio.push(num);
+      }
     }
-
-    await new Promise((res) => setTimeout(res, 1200)); // delay antar request
   }
 
-  let resultText = "";
-
-  for (const item of bioResults) {
-    resultText += `└─ 📅 ${item.number}\n   └─ 📝 "${item.bio}"\n      └─ ⏰ ${item.date}\n\n`;
-  }
-
+  let result = "----------------------------------------\n";
+  if (withBio.length) result += withBio.join("\n") + "\n\n";
   if (noBio.length)
-    resultText += `----------------------------------------\n📵 NOMOR TANPA BIO / PRIVASI (${noBio.length})\n${noBio.join("\n")}\n\n`;
-
+    result += `📵 NOMOR TANPA BIO / PRIVASI (${noBio.length})\n` + noBio.join("\n") + "\n\n";
   if (notRegistered.length)
-    resultText += `🚫 NOMOR TIDAK TERDAFTAR (${notRegistered.length})\n${notRegistered.join("\n")}\n`;
+    result += `🚫 NOMOR TIDAK TERDAFTAR (${notRegistered.length})\n` + notRegistered.join("\n");
 
-  const outputPath = path.join(__dirname, "hasil_bio.txt");
-  fs.writeFileSync(outputPath, resultText || "Tidak ada hasil.");
-
-  await bot.sendDocument(chatId, outputPath, { caption: "✅ Hasil cek bio selesai." });
+  const fileName = `hasil_cekbio_${Date.now()}.txt`;
+  fs.writeFileSync(fileName, result);
+  await bot.sendDocument(chatId, fileName);
+  fs.unlinkSync(fileName);
 });
-
-console.log("🤖 Telegram bot berjalan...");
