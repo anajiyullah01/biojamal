@@ -22,16 +22,18 @@ const startWhatsApp = () => {
   client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
+      headless: true,
+      executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome',
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-gpu",
         "--disable-dev-shm-usage",
-        "--disable-software-rasterizer",
+        "--disable-accelerated-2d-canvas",
+        "--no-first-run",
         "--no-zygote",
+        "--disable-gpu",
         "--single-process",
       ],
-      headless: true,
     },
   });
 
