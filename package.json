@@ -9,6 +9,7 @@
   "dependencies": {
     "chromium": "^3.0.2",
     "whatsapp-web.js": "^1.25.0",
+    "puppeteer-core": "^22.4.0",
     "qrcode-terminal": "^0.12.0",
     "node-telegram-bot-api": "^0.61.0",
     "qrcode": "^1.5.3"
