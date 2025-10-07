@@ -1,5 +1,5 @@
 import pkg from "whatsapp-web.js";
-const { Client, AuthStrategy } = pkg;
+const { Client } = pkg;
 import qrcode from "qrcode";
 import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
@@ -17,6 +17,7 @@ const db = new PGClient({
 });
 await db.connect();
 
+// === Setup tabel untuk session ===
 await db.query(`
   CREATE TABLE IF NOT EXISTS whatsapp_session (
     id SERIAL PRIMARY KEY,
@@ -24,36 +25,36 @@ await db.query(`
   );
 `);
 
-// === Custom Auth Strategy (fix) ===
-class DBAuth extends AuthStrategy {
-  async beforeStart(client) {
-    this.client = client;
-    const res = await db.query("SELECT data FROM whatsapp_session LIMIT 1");
-    if (res.rows.length > 0) {
-      client.options.session = JSON.parse(res.rows[0].data);
-      console.log("✅ Session loaded dari PostgreSQL");
-    } else {
-      console.log("ℹ️ Tidak ada session tersimpan, login baru diperlukan.");
-    }
+// === Load session dari DB ===
+async function loadSession() {
+  const res = await db.query("SELECT data FROM whatsapp_session LIMIT 1");
+  if (res.rows.length > 0) {
+    console.log("✅ Session WhatsApp ditemukan di database");
+    return JSON.parse(res.rows[0].data);
   }
-
-  async afterAuth(session) {
-    console.log("💾 Menyimpan session baru ke database...");
-    await db.query("DELETE FROM whatsapp_session");
-    await db.query("INSERT INTO whatsapp_session (data) VALUES ($1)", [
-      JSON.stringify(session),
-    ]);
-  }
-
-  async logout() {
-    console.log("🧹 Menghapus session dari database...");
-    await db.query("DELETE FROM whatsapp_session");
-  }
+  console.log("ℹ️ Tidak ada session tersimpan, login baru diperlukan");
+  return null;
 }
 
-// === WhatsApp Client ===
+// === Simpan session ke DB ===
+async function saveSession(session) {
+  await db.query("DELETE FROM whatsapp_session");
+  await db.query("INSERT INTO whatsapp_session (data) VALUES ($1)", [JSON.stringify(session)]);
+  console.log("💾 Session baru disimpan ke database");
+}
+
+// === Hapus session (logout) ===
+async function clearSession() {
+  await db.query("DELETE FROM whatsapp_session");
+  console.log("🧹 Session dihapus dari database");
+}
+
+// === Load session sebelum start ===
+const sessionData = await loadSession();
+
+// === Inisialisasi WhatsApp Client ===
 const client = new Client({
-  authStrategy: new DBAuth(),
+  session: sessionData,
   puppeteer: {
     headless: true,
     args: [
@@ -67,25 +68,32 @@ const client = new Client({
   },
 });
 
-// === QR Event ===
+// === Event: QR muncul ===
 client.on("qr", async (qr) => {
   const qrImage = await qrcode.toBuffer(qr);
   await bot.sendPhoto(ADMIN_ID, qrImage, { caption: "📲 Scan QR untuk login WhatsApp" });
+  console.log("✅ QR dikirim ke Telegram");
 });
 
-// === Ready Event ===
+// === Event: Auth sukses ===
+client.on("authenticated", async (session) => {
+  await saveSession(session);
+});
+
+// === Event: Ready ===
 client.on("ready", async () => {
   console.log("✅ WhatsApp Web sudah terhubung!");
   await bot.sendMessage(ADMIN_ID, "✅ WhatsApp Web sudah terhubung!");
 });
 
-// === Disconnect Event ===
+// === Event: Disconnect ===
 client.on("disconnected", async (reason) => {
   console.log("⚠️ WhatsApp disconnected:", reason);
   await bot.sendMessage(ADMIN_ID, "⚠️ WhatsApp disconnected. Reconnecting...");
+  await clearSession();
 });
 
-// === Jalankan WhatsApp Client ===
+// === Jalankan client ===
 client.initialize();
 
 // === Command /cekbio ===
